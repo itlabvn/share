@@ -1,0 +1,79 @@
+#!/bin/bash
+#
+# chkconfig: 2345 20 80
+# nrpe daemon
+# description: The NRPE daemon communicates with the nagios daemon \
+#              transmitting vital system & hardware information about \
+#              different services.
+#
+# Author: Nick Winn
+#
+# $Revision: 1.2 $
+
+# Source function library.
+. /etc/init.d/functions
+
+# Get config.
+. /etc/sysconfig/network
+
+# Check that networking is up.
+[ "${NETWORKING}" = "no" ] && exit 0
+[ -f /usr/local/nagios/etc/nrpe.cfg ] || exit 0
+
+NRPE="/usr/local/nagios/bin/nrpe"
+PIDFILE="/var/run/nrpe.pid"
+CFG="/usr/local/nagios/etc/nrpe.cfg"
+
+RETVAL=0
+
+start() {
+    echo -n $"Starting NRPE: "
+    "${NRPE}" -c $CFG -d > /dev/null
+    RETVAL=$?
+    echo "OK"
+}
+
+stop() {
+    if [ -f "${PIDFILE}" ]; then
+        echo -n $"Stopping NRPE: "
+        killall ${NRPE} > /dev/null
+        echo "OK"
+    fi
+}
+
+
+restart() {
+    stop
+    start
+}
+
+# See how we were called.
+case "$1" in
+  start)
+        start
+        ;;
+  stop)
+        stop
+        ;;
+  status)
+        status NRPE
+        RETVAL=$?
+        ;;
+  reload)
+        restart
+        ;;
+  restart)
+        restart
+        ;;
+  condrestart)
+        if [ -f "${PIDFILE}" ]; then
+            restart
+        fi
+        ;;
+  *)
+        echo $"Usage: $0 {start|stop|status|restart|condrestart}"
+        exit 1
+        ;;
+esac
+
+exit $RETVAL
