@@ -2,7 +2,7 @@
 
 NGINX=/usr/local/nginx/sbin/nginx
 CONFFILE=/usr/local/nginx/conf/nginx.conf
-Init script có nội dung như sau:
+#Init script có nội dung như sau:
 
 #!/bin/sh
 #
