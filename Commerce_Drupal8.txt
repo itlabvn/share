@@ -1,0 +1,51 @@
+
++ First we have to create virtual host for our project ( I used Ubuntu, nignx and mysql)
+
++ vim /etc/nginx/sites-available/myforestdesign.com
+
+ server {
+        listen 80;
+        root /var/www/myforestdesign/web;
+        index index.php index.html index.htm;
+
+        server_name myforestdesign.com www.myforestdesign.com;
+        access_log /var/www/logs/access_myforestdesign.com.log;
+        error_log /var/www/logs/error_myforestdesign.com.log;
+
+        location / {
+                try_files $uri $uri/ /index.php?$query_string;
+        }
+
+        location ~ \.php$ {
+                fastcgi_split_path_info ^(.+\.php)(/.+)$;
+                fastcgi_pass unix:/var/run/php5-fpm.sock;
+                fastcgi_index index.php;
+                include fastcgi_params;
+        }
+}
+
++ mkdir -p /var/www/myforestdesign
++ chown -R root:www-data /var/www/myforestdesign  ( make sure ubuntu account in www-data )
+
+
++ Create symbollic link to sites-enabled directory 
+ln -s /etc/nginx/sites-available/myforestdesign.com /etc/nginx/sites-enabled/myforestdesign.com
+
+
++ Checking nginx config & restart nginx 
+nginx -t 
+service nginx restart
+
++ Go to your Virtual host directory ( /var/www )
+composer create-project drupalcommerce/project-base myforestdesign --stability dev
+
++ After success donwload drupal file . Now we will create database for our project 
+
+create database myforestdesign character set utf8 collate utf8_general_ci;
+grant all privileges on myforestdesign.* to 'myforestdesign'@'localhost' with grant option;
+set password for 'myforestdesign'@'localhost'=password('P@ssword2016');
+show grants for 'myforestdesign'@'localhost';
+
++ Next access http://myforestdesign.com/core/install.php to install 
+
++ Finished install
