@@ -1,0 +1,357 @@
+Hello everybody, Today I will show you how to install latest nginx version and config virtual hosts
+Centos 6 IP 172.16.20.100 , Network card = bridge 
+
+I. Install latest nginx on CentOS
+
+Step 1: Install those packages for compiled preparation
+	yum install make gcc gcc-c++ pcre-devel zlib-devel openssl-devel
+	
+Step 2: Create a user for running nginx service and setting nologin 
+	useradd -d /dev/null -c "nginx user" -s /sbin/nologin nginx
+	
+Step 3: Download and compiled nginx packages 
+	wget http://nginx.org/download/nginx-1.10.2.tar.gz
+	tar -xzvf nginx-1.10.2.tar.gz
+	cd nginx-1.10.2
+	./configure --with-http_ssl_module \      
+	--user=nginx \
+	--group=nginx \
+	--with-pcre \                            
+	--with-file-aio \                          
+	--with-http_stub_status_module \          
+	--with-http_realip_module \           
+	--with-http_gzip_static_module        
+	make
+	make install
+	
+Step 4: Create nginx startup service in CentOS
+vim /etc/init.d/nginx 
+#!/bin/sh
+
+# Configuration file for the nginx service.
+NGINX=/usr/local/nginx/sbin/nginx
+CONFFILE=/usr/local/nginx/conf/nginx.conf
+#Init script có nội dung như sau:
+
+#
+# nginx - this script starts and stops the nginx daemon
+#
+# chkconfig:   - 85 15 
+# description:  Nginx is an HTTP(S) server, HTTP(S) reverse \
+#               proxy and IMAP/POP3 proxy server
+# processname: nginx
+# config:      /etc/nginx/nginx.conf
+# config:      /etc/sysconfig/nginx
+# pidfile:     /var/run/nginx.pid
+
+# Source function library.
+. /etc/rc.d/init.d/functions
+
+# Source networking configuration.
+. /etc/sysconfig/network
+
+# Check that networking is up.
+[ "$NETWORKING" = "no" ] && exit 0
+
+[ -f /etc/sysconfig/nginx ] && . /etc/sysconfig/nginx
+
+nginx=${NGINX}
+prog=$(basename $nginx)
+NGINX_CONF_FILE=${CONFFILE}
+lockfile=/var/lock/subsys/nginx
+
+
+start() {
+    [ -x $nginx ] || exit 5
+    [ -f $NGINX_CONF_FILE ] || exit 6
+
+    echo -n $"Starting $prog: "
+    daemon $nginx -c $NGINX_CONF_FILE
+    retval=$?
+    echo
+    [ $retval -eq 0 ] && touch $lockfile
+    return $retval
+}
+
+stop() {
+    echo -n $"Stopping $prog: "
+    killproc $prog -QUIT
+    retval=$?
+    echo
+    [ $retval -eq 0 ] && rm -f $lockfile
+    return $retval
+}
+
+restart() {
+    configtest || return $?
+    stop
+    sleep 1
+    start
+}
+
+reload() {
+    configtest || return $?
+    echo -n $"Reloading $prog: "
+    killproc $nginx -HUP
+    RETVAL=$?
+    echo
+}
+
+force_reload() {
+    restart
+}
+
+configtest() {
+  $nginx -t -c $NGINX_CONF_FILE
+}
+
+rh_status() {
+    status $prog
+}
+
+rh_status_q() {
+    rh_status >/dev/null 2>&1
+}
+
+case "$1" in
+    start)
+        rh_status_q && exit 0
+        $1
+        ;;
+    stop)
+        rh_status_q || exit 0
+        $1
+        ;;
+    restart|configtest)
+        $1
+        ;;
+    reload)
+        rh_status_q || exit 7
+        $1
+        ;;
+    force-reload)
+        force_reload
+        ;;
+    status)
+        rh_status
+        ;;
+    condrestart|try-restart)
+        rh_status_q || exit 0
+            ;;
+    *)
+        echo $"Usage: $0 {start|stop|status|restart|condrestart|try-restart|reload|force-reload|configtest}"
+        exit 2
+esac
+
+
++ Change execute permission for startup script 
+	chmod +x /etc/init.d/nginx
+	
++ Add nginx startup script in CentOS services
+	chkconfig --add nginx 
+	chkconfig nginx on 
+	service nginx restart
+
++ Add nginx's binary directory to $PATH 
+	vim ~/.bashrc
+	export PATH=$PATH:/usr/local/nginx/sbin
+	
++ Finished install nginx on CentOS now we can checking by command 
+	nginx -v  //show version 
+	nginx -t  //show status nginx config
+	
+II. Now we will config Virtual Hosts Configuration 
+1. Method 1 : Name-Based Virtual Hosts (Vhosts) on nginx 
+
+Step 1: Modify Nginx file configure 
+vim /usr/local/nginx/conf/nginx.conf
+user  nginx;
+worker_processes  1;   //number of CPU 
+error_log  /var/log/nginx/error.log;
+pid        /var/run/nginx.pid;
+
+events {
+    worker_connections  1024;   //number of CPU x 1024
+}
+
+http {
+    include       /usr/local/nginx/conf/mime.types;
+    default_type  application/octet-stream;
+    log_format  main  '$remote_addr - $remote_user [$time_local] "$request" '
+                      '$status $body_bytes_sent "$http_referer" '
+                      '"$http_user_agent" "$http_x_forwarded_for"';
+    access_log  /var/log/nginx/access.log  main;
+    sendfile        on;
+    keepalive_timeout  65;
+    server {
+        listen       80;
+        server_name  localhost;
+        location / {
+            root   html;
+            index  index.html index.htm;
+        }
+        error_page   500 502 503 504  /50x.html;
+        location = /50x.html {
+            root   html;
+        }
+    }
+    include /usr/local/nginx/conf.d/*.conf;  //include directory nginx config 
+} 
+
+Step 2: Create directory store log and change owner
+	mkdir -p /var/log/nginx
+	chown -R nginx:nginx /var/log/nginx
+	mkdir -p /usr/local/nginx/conf.d/
+
+Step 3: Configuration nginx to process files .php extention 
++ Install php-fpm 
+	yum instal php-fpm
+	
++ Modify /etc/php-fpm.conf with some changing 
+	include=/etc/php-fpm.d/*.conf
+	[global]
+	pid = /var/run/php-fpm/php-fpm.pid
+	error_log = /var/log/php-fpm/error.log
+	log_level = warning
+	daemonize = yes
+
++ Modify /etc/php-fpm.d/www.conf with some changing
+	listen = /tmp/php_fpm.sock
+	listen.owner = nginx
+	listen.group = nginx
+
++ Restart php-fpm service 
+	chkconfig php-fpm on
+	service php-fpm restart
+	
+Step 4: Create config file for virtual hosts
+vim /usr/local/nginx/conf.d/itlabvn.net.conf 
+server{
+     listen       80;
+     server_name itlabvn.net itlabvn.net;
+     root /home/www/itlabvn.net;
+     error_log  /var/log/nginx/itlabvn.net_error.log error;
+     access_log  /var/log/nginx/itlabvn.net_access.log  main;
+     location /{
+         index index.html index.php;
+     }
+     location ~ \.php {
+         fastcgi_pass unix:/tmp/php_fpm.sock;
+         fastcgi_index   index.php;
+         include         /usr/local/nginx/conf/fastcgi_params;
+         fastcgi_param   SCRIPT_FILENAME $document_root/$fastcgi_script_name;
+     }
+}
+
+vim /usr/local/nginx/conf.d/itlabvn.local.conf 
+server{
+     listen       80;
+     server_name itlabvn.local itlabvn.local;
+     root /home/www/itlabvn.local;
+     error_log  /var/log/nginx/itlabvn.local_error.log error;
+     access_log  /var/log/nginx/itlabvn.local_access.log  main;
+     location /{
+         index index.html index.php;
+     }
+     location ~ \.php {
+         fastcgi_pass unix:/tmp/php_fpm.sock;
+         fastcgi_index   index.php;
+         include         /usr/local/nginx/conf/fastcgi_params;
+         fastcgi_param   SCRIPT_FILENAME $document_root/$fastcgi_script_name;
+     }
+}
+
+Step 5: Create Document Root for Virtual Host itlabvn.net and itlabvn.local -> change owner 
+	mkdir -p /home/www/itlabvn.net
+	mkdir -p /home/www/itlabvn.local
+	chown -R nginx:nginx /home/www/itlabvn.net
+	chown -R nginx:nginx /home/www/itlabvn.local
+	
+Step 6: Create index.php in Document Root with content 
+vim /home/www/itlabvn.net/index.php
+<?php
+echo "php testing on itlabvn.net page";
+?>
+
+vim /home/www/itlabvn.local/index.php
+<?php
+echo "php testing on itlabvn.local page";
+?>
+		
+Step 7: Mapping domain to ip in hosts files
+172.16.20.100 itlabvn.net	
+172.16.20.100 itlabvn.local
+
+Step 8: Restart nginx service and php-fpm 
+	service nginx restart 
+	service php-fpm restart
+
+Step 9: Testing on web browser
+	http://itlabvn.net 
+	http://itlabvn.local
+	
+	
+III. Method 2 Config IP-Based Virtual Hosts
+
+Step 1: Config 2 virtual NICs eth0:1 172.16.20.10 and eth0:2 172.16.20.20
+	ifconfig eth0:1 172.16.20.10 netmask 255.255.255.0 up
+	ifconfig eth0:2 172.16.20.20 netmask 255.255.255.0 up
+
+Step 2: Reconfig virtual Hosts file for itlabvn.net & itlabvn.local
+vim /usr/local/nginx/conf.d/itlabvn.net.conf
+server{
+     listen       172.16.20.10:80;
+     server_name www.itlabvn.net itlabvn.net;
+     root /home/www/itlabvn.net;
+     error_log  /var/log/nginx/itlabvn.net_error.log error;
+     access_log  /var/log/nginx/itlabvn.net_access.log  main;
+     location /{
+         index index.html index.php;
+     }
+     location ~ \.php {
+         fastcgi_pass unix:/tmp/php_fpm.sock;
+         fastcgi_index   index.php;
+         include         /usr/local/nginx/conf/fastcgi_params;
+         fastcgi_param   SCRIPT_FILENAME $document_root/$fastcgi_script_name;
+     }
+}
+
+vim /usr/local/nginx/conf.d/itlabvn.net.local
+server{
+     listen       172.16.20.20:80;
+     server_name www.itlabvn.local itlabvn.local;
+     root /home/www/itlabvn.local;
+     error_log  /var/log/nginx/itlabvn.local_error.log error;
+     access_log  /var/log/nginx/itlabvn.local_access.log  main;
+     location /{
+         index index.html index.php;
+     }
+     location ~ \.php {
+         fastcgi_pass unix:/tmp/php_fpm.sock;
+         fastcgi_index   index.php;
+         include         /usr/local/nginx/conf/fastcgi_params;
+         fastcgi_param   SCRIPT_FILENAME $document_root/$fastcgi_script_name;
+     }
+}
+
+Step 3: Mapping domain to ip in hosts files
+172.16.20.10 itlabvn.net	
+172.16.20.20 itlabvn.local
+
+Step 4: Restart nginx service and php-fpm 
+	service nginx restart 
+	service php-fpm restart
+
+Step 5: Testing on web browser
+	http://itlabvn.net 
+	http://itlabvn.local
+	
+Now we finished install latest nginx and configuration Virtual Hosts 
+Name-based & IP-Based method 
+Thank you for watching !	
+	
+	
+	
+	
+	
+	
