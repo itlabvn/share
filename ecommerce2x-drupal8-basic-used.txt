@@ -1,4 +1,4 @@
-n this tutorial you will learn about basic use of Drupal Commerce 2.x on Drupal 8. I will show you how to create product variation , product type & add product item. After that We will create product display view to show our products already added
+In this tutorial you will learn about basic use of Drupal Commerce 2.x on Drupal 8. I will show you how to create product variation , product type & add product item. After that We will create product display view to show our products already added
 II. Now we will learn basic from ecommerce2x
 
 + First Import currencies & Add store information
