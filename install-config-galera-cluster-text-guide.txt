@@ -1,0 +1,176 @@
+Hello everybody. Today I will show you how to install and config galera-cluster on centos 6
+we have 3 CentOS 6 with network card on brigde and LAN 172.16.20.0/24
+   
+   Topology
+   galera-db01 - 172.16.20.10/24
+   galera-db02 - 172.16.20.20/24
+   haproxy - 172.16.20.5/24
+   
+
+/* Do it on all 3 servers */   
+Step 1: remove mysql-server if had 
+#sudo yum erase mysql-server mysql mysql-devel mysql-libs
+#sudo rm -rf /var/lib/mysql
+
+Step 2: Add MariaDB Repositories
+vim /etc/yum.repos.d/mariadb.repo
+[mariadb]
+name = MariaDB
+baseurl = http://yum.mariadb.org/10.0/centos6-x86
+gpgkey=https://yum.mariadb.org/RPM-GPG-KEY-MariaDB
+gpgcheck=1
+
+Step 3: disable selinux
+sudo setenforce 0
+/* End do it on all 3 servers */
+
+Step 4: Install MariaDB Galera Cluster 10.0 software (both galera-db servers)
+sudo yum -y install MariaDB-Galera-server MariaDB-client rsync galera
+
+Step 5: Config MariaDB Security 
+sudo service mysql start
+sudo /usr/bin/mysql_secure_installation
+
+Step 6: Create MariaDB Galera Cluster User
+#mysql -u root -p //mysql root password : dbpass
+MariaDB [(none)]> GRANT ALL PRIVILEGES ON *.* TO 'cluster-user'@'%' IDENTIFIED BY 'clusterpass' WITH GRANT OPTION;
+MariaDB [(none)]> FLUSH PRIVILEGES;
+MariaDB [(none)]> exit
+
+Stop Mysql service 
+service mysql stop
+
+Step 7: Config MariaDB Galera Cluster on galera-db01 ( 172.16.20.10/24)
+vim /etc/my.cnf.d/server.cnf
+
+[mariadb-10.0]
+query_cache_size=0
+binlog_format=ROW
+default_storage_engine=innodb
+innodb_autoinc_lock_mode=2
+wsrep_provider=/usr/lib/galera/libgalera_smm.so
+wsrep_cluster_address="gcomm://172.16.20.10,172.16.20.20,172.16.20.5"
+wsrep_cluster_name='cluster1'
+wsrep_node_address='172.16.20.10'
+wsrep_node_name='galera-db01'
+wsrep_sst_method=rsync
+wsrep_sst_auth=cluster-user:clusterpass
+
+Step 8: Start MariaDB cluster 
+[root@galera-db01 ~]# /etc/init.d/mysql bootstrap
+
+Step 9: Checking result on galera-db01
+[root@galera-db01 ~]# mysql -u root -p -e "show status like 'wsrep%'"
+
+Step 10: Add galera-db02 ( node 2 ) in MariaDB Cluster
+[root@galera-db02 ~]# vim /etc/my.cnf.d/server.cnf
+
+[mariadb-10.0]
+query_cache_size=0
+binlog_format=ROW
+default_storage_engine=innodb
+innodb_autoinc_lock_mode=2
+wsrep_provider=/usr/lib/galera/libgalera_smm.so
+wsrep_cluster_address="gcomm://172.16.20.10,172.16.20.20,172.16.20.5"
+wsrep_cluster_name='cluster1'
+wsrep_node_address='172.16.20.20'
+wsrep_node_name='galera-db02'
+wsrep_sst_method=rsync
+wsrep_sst_auth=cluster-user:clusterpass
+
+Step 11: Startup mysql on galera-db02
+[root@galera-db02 ~]# /etc/init.d/mysql start
+
+Step 12: Checking result on galera-db02
+[root@galera-db02 ~]# mysql -u root -p -e "show status like 'wsrep%'"
+
+Step 13: install and config Galera Arbitrator on Haproxy server 172.16.20.5/24
+sudo yum erase mysql-server mysql mysql-devel mysql-libs
+sudo rm -rf /var/lib/mysql
+yum -y install galera
+which garbd
+
+Step 14: Startup Galera Arbitrator (garbd) 
+garbd -a gcomm://172.16.20.10:4567 -g cluster1 -l /tmp/1.out -d
+
+Step 15: Testing DB replication
++ On galera-db01 create db and table 
+[root@galera-db01 ~]# mysql -uroot -p
+MariaDB [(none)]> CREATE DATABASE clustertest;
+MariaDB [(none)]> USE clustertest;
+MariaDB [clustertest]> CREATE TABLE employees(number int, name varchar(50));
+MariaDB [clustertest]> INSERT INTO employees values(1,'NGUYEN HOANG NAM');
+MariaDB [clustertest]> SELECT * FROM employees;
+
++ On galera-db02 
+[root@galera-db02 ~]# mysql -uroot -p
+MariaDB [(none)]> USE clustertest;
+MariaDB [clustertest]> SELECT * FROM employees;
+
+Step 16: Power off or kill -9 mysql_pid galera-db01 and on galera-db02 insert value to employees table
+MariaDB [clustertest]> INSERT INTO employees values(2,'LE XUAN LAM');
+Query OK, 1 row affected (0.13 sec)
+
+Step 15: Power on or startup mysql service galera-db01 and checking 
+[root@galera-db02 ~]# mysql -uroot -p
+MariaDB [(none)]> USE clustertest;
+MariaDB [clustertest]> SELECT * FROM employees;
+
+we finished config galera cluster db now we will config haproxy loadbalancer for galera cluster
+
+II. Config haproxy ( loadbalancer ) for cluster db - ip 172.16.20.5/24
+Step 1: install haproxy 
+yum -y install haproxy
+
+Step 2: config haproxy  del all and copy content 
+vim /etc/haproxy/haproxy.cfg 
+#---------------------------------------------------------------------
+# Global settings
+#---------------------------------------------------------------------
+global
+    log         127.0.0.1 local2
+    chroot      /var/lib/haproxy
+    pidfile     /var/run/haproxy.pid
+    maxconn     4000
+    user        haproxy
+    group       haproxy
+    daemon
+    # turn on stats unix socket
+    stats socket /var/lib/haproxy/stats
+
+defaults
+    mode                    tcp
+    log                     global
+    option                  dontlognull
+    option                  redispatch
+    retries                 3
+    timeout queue           45s
+    timeout connect         5s
+    timeout client          1m
+    timeout server          1m
+    timeout check           10s
+    maxconn                 3000
+#---------------------------------------------------------------------
+# main frontend which proxys to the backends
+#---------------------------------------------------------------------
+frontend  main *:3306
+    bind 172.16.20.5:3306
+    default_backend             app
+#---------------------------------------------------------------------
+# round robin balancing between the various backends
+#---------------------------------------------------------------------
+backend app
+    balance     roundrobin
+    server  app1 172.16.20.10:3306 maxconn 151 check
+    server  app2 172.16.20.20:3306 maxconn 151 check
+	
+	
+Step 3: Startup haproxy service
+chkconfig haproxy on && service haproxy restart	
+
+Step 4: Checking haproxy loadbalancing for galera cluster 
+[root@haproxy ~]# mysql -u cluster-user -pclusterpass -h 172.16.20.5 -P 3306 -e "select @@hostname";
+
+as we see, the loadbalancer use roundrobin 
+
+Now we finished install and config galera cluster on centos 6. Thank you for watching!
