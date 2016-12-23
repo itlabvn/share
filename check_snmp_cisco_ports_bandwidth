@@ -1,0 +1,443 @@
+#!/bin/bash
+
+
+#    This program is free software: you can redistribute it and/or modify
+#    it under the terms of the GNU General Public License as published by
+#    the Free Software Foundation, either version 3 of the License, or
+#    (at your option) any later version.
+
+#    This program is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    GNU General Public License for more details.
+
+#    You should have received a copy of the GNU General Public License
+#    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+##########################################################################
+# Title      :  check_cisco_ports_bandwidth
+# Author     :  Simon Blandford <simon -at- onepointltd -dt- com>
+# Date       :  2012-12-08 - 2016-11-03
+# Requires   :  snmpget, snmpwalk
+# Category   :  Monitoring
+# Version    :  0.5.0
+# Copyright  :  Simon Blandford, Onepoint Consulting Limited
+# License    :  GPLv3 (see above)
+##########################################################################
+# Description
+# Check Cisco device ports bandwidth average
+##########################################################################
+
+#******************************************************************************
+#********************** Constants *********************************************
+#******************************************************************************
+
+TMPDIR="/tmp/check_snmp_cisco_ports_bandwidth"
+
+SNMPWALK="1.3.6.1.2.1.31.1.1.1.1"
+SNMPINCOUNTER="1.3.6.1.2.1.31.1.1.1.6."
+SNMPOUTCOUNTER="1.3.6.1.2.1.31.1.1.1.10."
+SHORTNAME="Bandwidth"
+OUTPUTDECIMALPLACES=2
+
+usage () {
+  echo
+  echo "Usage: check_snmp_cisco_ports_bandwidth -h <host> -s <snmp-string> -o <output units> -p <perf data units> -i <interface number> -f <intf name filter> -e <intf name exclude filter> -w <warn> -c <crit>"
+  echo "or: check_snmp_cisco_ports_bandwidth --help"
+  echo "or: check_snmp_cisco_ports_bandwidth --list-interfaces -h <host> -s <snmp-string> -f <intf name filter> -e <intf name exclude filter>"
+  echo "or: check_snmp_cisco_ports_bandwidth --clear-temp-files -h <host>"
+  echo "-h <host> is the hostname or IP address of the Cisco device."
+  echo "-s <snmp-string> is the commuity string e.g. 'public'."
+  echo "-w <warn> is the warning level in bits/sec, postfix with K,M or G as required."
+  echo "-c <crit> is the critical level in bits/sec, postfix with K,M or G as required."
+  echo "-o <output units> Can be b for bits/sec, K for Kbits/sec, M for Mbits/sec or G for Gbits/sec. Default b."
+  echo "-p <perf data units> Can be b for bits/sec, K for Kbits/sec, M for Mbits/sec, G for Gbits/sec or - for no performance data. Default -."
+  echo "-i <interface number> The number of the interface to report. Default is all of them."
+  echo "-f Interface name filter in grep -E format."
+  echo "-e Interface name exclude filter in grep -E format."
+  echo
+  echo "Output is the average bitrate in and out from each port taken between now and the previous reading."
+  echo "The first reading will report 'unknown' since at least two timepoints are required for an average."
+  echo
+  exit 3
+}
+
+expand_units () {
+  local number unit
+  
+  number=$( echo "$1" | grep -E -o "[0-9.]+" )
+  if [ $number ]; then
+    unit=$( echo "$1" | grep -E -o "[KMG]" )
+    if [ $unit ]; then
+      case $unit in
+        K)
+          number=$( echo "$number * 1024" | bc )
+          ;;
+        M)
+          number=$( echo "$number * 1024 * 1024" | bc )
+          ;;
+        G)
+          number=$( echo "$number * 1024 * 1024 * 1024" | bc )
+          ;;
+      esac
+    fi
+    #Output integer i.e. up to any decimal point
+    echo "${number/.*}"
+  fi
+}
+
+apply_units () {
+  local number units
+  
+  number=$1
+  unit=$( echo "$2" | grep -E -o "[KMG]" )
+
+  if [ $unit ]; then
+    case $unit in
+      K)
+        number=$( echo "scale=$OUTPUTDECIMALPLACES;$number / 1024.0" | bc )
+        ;;
+      M)
+        number=$( echo "scale=$OUTPUTDECIMALPLACES;$number / 1024.0 / 1024.0" | bc )
+        ;;
+      G)
+        number=$( echo "scale=$OUTPUTDECIMALPLACES;$number / 1024.0 / 1024.0 / 1024.0" | bc )
+        ;;
+    esac
+  fi
+  #Output decimal
+  echo "$number"
+}
+
+unknown_error () {
+  echo "$SHORTNAME UNKNOWN - $1"
+  #Don't remove lock directory if error was presence of lock directory
+  if echo "$1" | grep "lock directory" >/dev/null; then
+    trap - INT TERM EXIT
+  fi
+  exit 3
+}
+
+
+performance_data () {
+  local line interfaceNumber inBitRate outBitRate oldIFS
+  
+  #Prepare performance data to Nagios
+  oldIFS="$IFS"
+  IFS=$'\n'
+  for line in $( cat "$tmpFile" ); do
+    IFS="$oldIFS"
+
+    interfaceNumber=$( echo "$line" | awk '{print $1}' )
+
+    #If only testing one interface, hide performance data of all others
+    if [ $interfaceToTest ] && [ $interfaceToTest -ne $interfaceNumber ]; then
+      continue
+    fi
+    
+    inBitRate=$( echo "$line" | awk '{print $6}' )
+    outBitRate=$( echo "$line" | awk '{print $7}' )
+    
+    echo -n "Interface $interfaceNumber In=$( apply_units $inBitRate $pUnits );$( apply_units $warn $pUnits );"
+    echo -n "$( apply_units $crit $pUnits );0;0 "
+    echo -n "Interface $interfaceNumber Out=$( apply_units $outBitRate $pUnits );$( apply_units $warn $pUnits );"
+    echo -n "$( apply_units $crit $pUnits );0;0 "
+
+    IFS=$'\n'
+  done
+  IFS="$oldIFS"
+  echo
+}
+
+list_interfaces () {
+  #List interfaces
+  snmpwalk -v2c -c "$string" "$host" "$SNMPWALK"
+}
+
+interface_number () {
+  echo "$1" | grep -E -o "ifName.[0-9]+|\.[0-9]+[[:space:]]+=[[:space:]]+STRING" | grep -E -o "[0-9]+"
+}
+
+interface_name () {
+  echo "$1" | grep -E -o "[^[:space:]]+$"
+}
+
+filter_interfaces () {
+  local interfaceName retVal
+  
+  retVal=1
+  while read line; do
+    if echo "$line" | grep -E "[[:space:]]" >/dev/null; then
+      interfaceName=$( interface_name "$line" )
+    else
+      interfaceName="$line"
+    fi
+    if [ ! $interfaceExcludeFilter ] && \
+        echo "$interfaceName" | \
+        grep -E "$interfaceFilter" >/dev/null; then
+      echo "$line"
+      retVal=0
+    fi
+    if [ $interfaceExcludeFilter ] && \
+        echo "$interfaceName" | \
+        grep -E "$interfaceFilter" | \
+        grep -E -v "$interfaceExcludeFilter" >/dev/null; then
+      echo "$line"
+      retVal=0
+    fi
+  done
+  return $retVal
+}
+
+if [ "$1" == "--help" ]; then
+  usage
+fi
+
+for i in $@; do
+  if [ $get_h ]; then
+    host=$( echo "$i" )
+    unset get_h
+  fi
+  if [ $get_s ]; then
+    string=$( echo "$i" )
+    unset get_s
+  fi
+  if [ $get_o ]; then
+    oUnits=$( echo "$i" | grep -E -io "b|K|M|G" )
+    unset get_o
+  fi
+  if [ $get_p ]; then
+    pUnits=$( echo "$i" | grep -E -io "b|K|M|G|-" )
+    unset get_p
+  fi
+  if [ $get_i ]; then
+    interfaceToTest=$( echo "$i" | grep -E -o "[0-9]+" )
+    unset get_i
+  fi
+  if [ $get_f ]; then
+    interfaceFilter=$i
+    unset get_f
+  fi
+  if [ $get_e ]; then
+    interfaceExcludeFilter=$i
+    unset get_e
+  fi
+  if [ $get_w ]; then
+    warn=$( expand_units "$i" )
+    unset get_w
+  fi
+  if [ $get_c ]; then
+    crit=$( expand_units "$i" )
+    unset get_c
+  fi
+  [ "x""$i" == "x-h" ] && get_h=1
+  [ "x""$i" == "x-s" ] && get_s=1
+  [ "x""$i" == "x-o" ] && get_o=1
+  [ "x""$i" == "x-p" ] && get_p=1
+  [ "x""$i" == "x-i" ] && get_i=1
+  [ "x""$i" == "x-w" ] && get_w=1
+  [ "x""$i" == "x-c" ] && get_c=1
+  [ "x""$i" == "x-f" ] && get_f=1
+  [ "x""$i" == "x-e" ] && get_e=1
+  [ "x""$i" == "x--list-interfaces" ] && get_if=1
+  [ "x""$i" == "x--clear-temp-files" ] && get_clr=1
+done
+
+#Must have host beyond this point
+if [ ! $host ]; then
+  usage
+fi
+
+#Create temporary directory if it doesn't already exist
+if [ ! -d "$TMPDIR" ]; then
+  mkdir -p "$TMPDIR" || exit 1
+  if [ $( whoami ) == "root" ]; then
+    chmod 700 "$TMPDIR"
+    chown nagios.nagios "$TMPDIR"
+  fi
+fi
+tmpFile="$TMPDIR""/""$host"".txt"
+
+if [ $get_clr ]; then
+  rm -f "$tmpFile"*
+  exit 0
+fi
+
+#Must have snmp string beyond this point
+if [ ! $string ]; then
+  usage
+fi
+
+if [ $get_if ]; then
+  list_interfaces | filter_interfaces
+  exit 0
+fi
+
+#Must have warning and critical levels
+if [ ! $warn ] || [ ! $crit ] ; then
+  usage
+fi
+[ ! $oUnits ] && oUnits="b"
+[ ! $pUnits ] && pUnits="-"
+[ $oUnits == "b" ] && unset oUnits
+[ $pUnits == "b" ] && unset pUnits
+
+
+#Remove any stale lock directories older than 10 mins
+if [ ${#TMPDIR} -gt 4 ]; then
+  find "$TMPDIR" -type d -mmin +10 -print0 | xargs -0 -I '{}' rmdir {}
+fi
+
+
+#Check for directory lock
+if ! mkdir "$TMPDIR""/""$host"; then
+  unknown_error "Unable to create lock directory for host at $TMPDIR""/""$host"
+fi
+
+trap "rmdir ""$TMPDIR""/""$host"";" INT TERM EXIT
+
+
+#Purge tmp files unchanged for more than a week
+if [ ${#TMPDIR} -gt 4 ]; then
+  find "$TMPDIR" -type f -mtime +7 -print0 | xargs -0 -I '{}' rm -f {}
+fi
+
+#Initialise tmp file if not there
+if [ ! -f "$tmpFile" ]; then
+  #Discover network port numbers and initialise each line of file
+  echo >"$tmpFile"
+  oldIFS="$IFS"
+  IFS=$'\n'
+  for line in $( list_interfaces ); do
+    IFS="$oldIFS"
+    
+    ifNum=$( interface_number "$line" )
+    ifName=$( interface_name "$line" )
+    
+    echo "$ifNum $ifName $(date +%s) 0 0 0 0" >>"$tmpFile"
+    IFS=$'\n'
+  done
+  IFS="$oldIFS"
+  if [ $ifNum ]; then
+    if [ $( whoami ) == "root" ]; then
+      chown nagios.nagios "$tmpFile"
+    fi
+    firstScan="yes"
+  else
+    rm -f "$tmpFile"
+    unknown_error "Unable to find network port list"
+  fi
+fi
+
+#Create a new temporary file
+newFile="$tmpFile""_new"
+echo >"$newFile"
+if [ $( whoami ) == "root" ]; then
+  chown nagios.nagios "$newFile"
+fi
+
+#Update network stats for each port
+peakBandwidth=0
+peakInterface=0
+oldIFS="$IFS"
+IFS=$'\n'
+for line in $( cat "$tmpFile" ); do
+  IFS="$oldIFS"
+  
+  #Read items from line in file
+  interfaceNumber=$( echo "$line" | awk '{print $1}' )
+  interfaceName=$( echo "$line" | awk '{print $2}' )
+  previousTime=$( echo "$line" | awk '{print $3}' )
+  previousInByteCount=$( echo "$line" | awk '{print $4}' )
+  previousOutByteCount=$( echo "$line" | awk '{print $5}' )
+  
+  if [ $interfaceToTest ] && [ $interfaceToTest -ne $interfaceNumber ] && [ ! $firstScan ]; then
+    previousInBitRate=$( echo "$line" | awk '{print $6}' )
+    previousOutBitRate=$( echo "$line" | awk '{print $7}' )
+    #Output existing values unchanged back
+    echo -n "$interfaceNumber $previousTime $previousInByteCount $previousOutByteCount " >>"$newFile"
+    echo -n "$previousInBitRate " >>$newFile
+    echo "$previousOutBitRate" >>$newFile
+    IFS=$'\n'
+    continue
+  fi
+  
+  #Skip any lines that don't pass filter
+  if ! echo "$interfaceName" | filter_interfaces >/dev/null; then
+    IFS=$'\n'
+    continue
+  fi
+  
+  #Calculate time between now and previous reading
+  currentTime=$( date +%s )
+  readingAge=$(( currentTime - previousTime ))
+  
+  #Query byte counter
+  currentInByteCount=$( snmpget -v2c -c $string $host "$SNMPINCOUNTER""$interfaceNumber" | \
+      awk {'print $4'} | grep -E -o "[0-9]+" ) || \
+      unknown_error "Unable to in get byte counter of port $interfaceNumber"
+  currentOutByteCount=$( snmpget -v2c -c $string $host "$SNMPOUTCOUNTER""$interfaceNumber" | \
+      awk {'print $4'} | grep -E -o "[0-9]+" ) || \
+      unknown_error "Unable to out get byte counter of port $interfaceNumber"
+
+  #Calculate bandwidth
+  if [ $readingAge -gt 0 ]; then
+    inBitRate=$(( (currentInByteCount - previousInByteCount) * 8 / readingAge ))
+    outBitRate=$(( (currentOutByteCount - previousOutByteCount) * 8 / readingAge ))
+  else
+    inBitRate=0
+    outBitRate=0
+  fi
+  
+  [ $previousInByteCount -eq 0 ] && inBitRate=0
+  [ $previousOutByteCount -eq 0 ] && outBitRate=0
+  
+  
+  #Record any peak
+  if [ $inBitRate -gt $peakBandwidth ]; then
+    peakBandwidth=$inBitRate
+    peakInterface=$interfaceNumber
+  fi
+  if [ $outBitRate -gt $peakBandwidth ]; then
+    peakBandwidth=$outBitRate
+    peakInterface=$interfaceNumber
+  fi   
+      
+  echo -n "$interfaceNumber $interfaceName $currentTime $currentInByteCount $currentOutByteCount " >>"$newFile"
+  echo -n "$inBitRate " >>$newFile
+  echo "$outBitRate" >>$newFile
+  
+  IFS=$'\n'
+done
+IFS="$oldIFS"
+mv -f "$newFile" "$tmpFile"
+
+if [ $firstScan ]; then
+  unknown_error "Initial reading. Another needed to take average."
+fi
+
+status=0
+status_text="OK"
+
+if [ $peakBandwidth -gt $warn ]; then
+  status=1
+  status_text="WARNING"
+fi
+if [ $peakBandwidth -gt $crit ]; then
+  status=2
+  status_text="CRITICAL"
+fi
+
+performance_data_string=$( performance_data )
+
+#Output status to Nagios
+echo -n "$SHORTNAME $status_text - "
+[ $interfaceToTest ] && echo -n "Bitrate " || echo -n "Peak bitrate "
+echo -n "$( apply_units $peakBandwidth $oUnits ) $oUnits""b/s on interface number $peakInterface"
+
+if [ "x""$pUnits" == "x-" ]; then
+  echo
+else
+  echo "|""$performance_data_string"
+fi
+exit $status
