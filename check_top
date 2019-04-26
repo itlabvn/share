@@ -1,0 +1,137 @@
+#!/bin/bash
+# ========================================================================================
+# Top Process of CPU Utilization for Nagios
+#
+# Written by            : Brian Olson (bolson@nagios.com)
+# Release               : 1.0
+# Creation date                 : 23 October 2017
+# Revision date         : 23 October 2017
+# Package               : DTB Nagios Plugin
+# Description           : Nagios plugin (script) to check and return top CPU consumer.
+#                                                 This script has been designed and written on Linux platform,
+#                                                 It will aggregate parent and all child processes by process name
+#                                                 and return the process name and CPU percent, as well as a status 
+#                                                 of warning or critical if percent is beyond the threshold provided
+#                                                 by the -w (warning) and -c (critical arguments.
+#                                                 
+#
+# Usage                 : ./check_top [-w <warn>] [-c <crit]
+
+# ----------------------------------------------------------------------------------------
+#
+# TODO: 
+#               
+#                
+#
+# 
+# ========================================================================================
+
+# Nagios return codes
+STATE_OK=0
+STATE_WARNING=1
+STATE_CRITICAL=2
+STATE_UNKNOWN=3
+
+# Plugin default level
+WARNING_THRESHOLD=${WARNING_THRESHOLD:="30"}
+CRITICAL_THRESHOLD=${CRITICAL_THRESHOLD:="50"}
+
+
+# Plugin variable description
+PROGNAME=$(basename $0)
+RELEASE="Revision 1.0"
+AUTHOR="(c) 2017 Brian Olson (bolson@nagios.com)"
+
+# Functions plugin usage
+print_release() {
+    echo "$RELEASE $AUTHOR"
+}
+
+print_usage() {
+        echo ""
+        echo "$PROGNAME $RELEASE - Top Process of CPU Utilization for Nagios"
+        echo ""
+        echo "Usage: check_top -w <warning> -c <critical>"
+        echo ""
+        echo "          -w  Warning level for CPU percent"
+	echo "		-c  critical level for CPU percent"
+        echo "          -h  Show this page"
+        echo ""
+    echo "Usage: $PROGNAME"
+    echo "Usage: $PROGNAME --help"
+    echo "Usage: $PROGNAME -w <warning> -c <critical>"
+    echo ""
+}
+
+print_help() {
+                print_usage
+        echo ""
+        print_release $PROGNAME $RELEASE
+        echo ""
+        echo "This plugin will aggregate parent and all child processes and return name of top consumer "
+                echo "-w is for reporting warning levels in percent of CPU utilization"
+		echo "-c is for reporting critical levels in percent of CPU utilization"
+        echo ""
+                exit 0
+}
+
+# Make sure the correct number of command line arguments have been supplied
+#if [ $# -lt 1 ]; then
+#    print_usage
+#    exit $STATE_UNKNOWN
+#fi
+
+# Parse parameters
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -h | --help)
+            print_help
+            exit $STATE_OK
+            ;;
+        -v | --version)
+                print_release
+                exit $STATE_OK
+                ;;
+        -w | --warning)
+                shift
+                WARNING_THRESHOLD=$1
+                ;;
+        -c | --critical)
+               shift
+                CRITICAL_THRESHOLD=$1
+                ;;
+        *)  echo "Unknown argument: $1"
+            print_usage
+            exit $STATE_UNKNOWN
+            ;;
+        esac
+shift
+done
+# Top CPU Consumer aggregated by process name
+
+vartmp1="$(ps aux | awk '{array[$11]+=$3} END { for (i in array) {print array[i]"\t" i}}' \
+| column -t | sort -r | awk '{ if ($1 > 0) { print } }' | head -1 | awk '{print $2 "\t" $1}')"
+vartmp2=$(echo $vartmp1 | awk '{print $2}')
+varproc=$(echo $vartmp1 | awk '{print $1}')
+
+        if [ -z "$vartmp2" ]; then 
+		vartmp2=0
+	fi
+	varcpu="${vartmp2%.*}"
+
+	if (( $varcpu >= $WARNING_THRESHOLD )) && (( $varcpu < $CRITICAL_THRESHOLD )); then
+            label="TOP CPU PROCESS WARNING:"
+            result=$STATE_WARNING
+        elif (( $varcpu >= $CRITICAL_THRESHOLD )); then
+            label="TOP CPU PROCESS CRITICAL:"
+            result=$STATE_CRITICAL
+        else
+            label="TOP CPU PROCESS OK:"
+            result=$STATE_OK
+        fi
+	if (( $varcpu > 0 )); then
+		echo -e "$label Process name: $varproc CPU:  $varcpu%"
+	else
+		echo -e $label " All running processes less than 1%"
+	fi
+exit $result
